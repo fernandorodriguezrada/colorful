@@ -82,8 +82,28 @@ def load_api_key():
     load_dotenv()
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
-        print("error: OPENROUTER_API_KEY not set (add to .env or export it)")
-        sys.exit(1)
+        print(f"\n  {K}no API key found{R}")
+        key = safe_input(f"  {C}enter your OpenRouter key{R} {D}(sk-or-v1-...){R} {D}›{R} ").strip()
+        if not key:
+            print(f"  {K}oops{R}  need an API key to continue")
+            sys.exit(1)
+        dotenv_path = Path(".env")
+        if dotenv_path.exists():
+            lines = dotenv_path.read_text().splitlines()
+            found = False
+            for i, line in enumerate(lines):
+                if line.startswith("OPENROUTER_API_KEY="):
+                    lines[i] = f"OPENROUTER_API_KEY={key}"
+                    found = True
+                    break
+            if not found:
+                lines.append(f"OPENROUTER_API_KEY={key}")
+            dotenv_path.write_text("\n".join(lines) + "\n")
+        else:
+            dotenv_path.write_text(f"OPENROUTER_API_KEY={key}\n")
+        print(f"  {T}saved{R}  {D}to .env{R}")
+        load_dotenv()
+        os.environ["OPENROUTER_API_KEY"] = key
     return key
 
 
@@ -116,7 +136,8 @@ def generate(image_uri, prompt, model, api_key):
     resp = requests.post(API_URL, headers=headers, json=payload, timeout=120)
     if resp.status_code != 200:
         err = resp.json().get("error", {}).get("message", resp.text)
-        print(f"\r  {R}error{R}  {D}({resp.status_code}){R} {err}")
+        hint = f" {D}(check your API key in .env){R}" if resp.status_code == 401 else ""
+        print(f"\r  {R}error{R}  {D}({resp.status_code}){R} {err}{hint}")
         sys.exit(1)
     data = resp.json()
     b64 = data["data"][0]["b64_json"]
