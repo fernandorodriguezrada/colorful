@@ -42,9 +42,9 @@ MODELS = [
 # * flux.2-klein-4b requires ZDR off at https://openrouter.ai/settings/privacy
 
 TEXT_MODELS = [
-    ("google/gemma-4-26b-a4b-it:free",  "Gemma 4 26B",    "free",   ""),
-    ("google/gemma-4-31b-it:free",      "Gemma 4 31B",    "free",   ""),
-    ("deepseek/deepseek-v4-flash",      "DeepSeek V4 Flash","paid",""),
+    ("google/gemma-4-26b-a4b-it:free",  "Gemma 4 26B",    "free",   "",  "Gemma"),
+    ("google/gemma-4-31b-it:free",      "Gemma 4 31B",    "free",   "",  "Gemma"),
+    ("deepseek/deepseek-v4-flash",      "DeepSeek V4 Flash","paid","",  "DeepSeek"),
 ]
 
 API_URL = "https://openrouter.ai/api/v1/images"
@@ -213,19 +213,23 @@ def list_chats():
 
 def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
     messages = [{"role": "system", "content": system_context()}]
-    model_name = next((n for s, n, *_ in TEXT_MODELS if s == model), model)
+    info = next((t for t in TEXT_MODELS if t[0] == model), None)
+    model_name = info[1] if info else model
+    short_name = info[4] if info else model
 
     if resume_path:
         data = load_chat(resume_path)
         messages = data["messages"]
         model = data.get("model", model)
-        model_name = next((n for s, n, *_ in TEXT_MODELS if s == model), model)
+        info = next((t for t in TEXT_MODELS if t[0] == model), None)
+        model_name = info[1] if info else model
+        short_name = info[4] if info else model
         print(f"\n  {rainbow('colorful')} {D}—{R} {C}{model_name}{R}  {D}(resumed){R}\n")
         for m in messages:
             if m["role"] == "user":
                 print(f"  {C}{USERNAME}{R} > {m['content']}")
             elif m["role"] == "assistant":
-                print(f"  {P}{model_name}{R} > ", end="")
+                print(f"  {P}{short_name}{R} > ", end="")
                 if _rich:
                     RichConsole().print(RichMD(m["content"]))
                 else:
@@ -247,7 +251,7 @@ def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
             token_info = f"  {D}{tt}t  ↑{pt} ↓{ct}{R}"
         print(f"\r  {RAINBOW[3]}done{R}{token_info}")
         save_chat(messages, model)
-        print(f"  {P}{model_name}{R} > ", end="")
+        print(f"  {P}{short_name}{R} > ", end="")
         if _rich:
             RichConsole().print(RichMD(reply))
         else:
@@ -291,7 +295,9 @@ def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
             slug = prompt.split("/model", 1)[-1].strip()
             if slug:
                 model = slug
-                model_name = next((n for s, n, *_ in TEXT_MODELS if s == model), model)
+                info = next((t for t in TEXT_MODELS if t[0] == model), None)
+                model_name = info[1] if info else model
+                short_name = info[4] if info else model
                 print(f"  {D}model → {C}{model_name}{R}")
             else:
                 print(f"  {C}{model_name}{R}")
@@ -324,7 +330,7 @@ def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
             token_info = f"  {D}{tt}t  ↑{pt} ↓{ct}{R}"
         print(f"\r  {RAINBOW[3]}done{R}{token_info}")
         save_chat(messages, model)
-        print(f"  {P}{model_name}{R} > ", end="")
+        print(f"  {P}{short_name}{R} > ", end="")
         if _rich:
             RichConsole().print(RichMD(reply))
         else:
@@ -395,7 +401,7 @@ def list_models():
     print(f"\n  {rainbow('text models')}")
     print(f"  {D}{'slug':<48} {'name':<22} {'cost':<16}{R}")
     print(f"  {D}{'─' * 86}{R}")
-    for slug, name, cost, _ in TEXT_MODELS:
+    for slug, name, cost, _, _ in TEXT_MODELS:
         print(f"  {C}{slug:<48}{R} {name:<22} {cost:<16}")
 
 
@@ -403,7 +409,7 @@ def list_text_models():
     print(f"\n  {rainbow('text models')}")
     print(f"  {D}{'slug':<48} {'name':<22} {'cost':<16}{R}")
     print(f"  {D}{'─' * 88}{R}")
-    for slug, name, cost, notes in TEXT_MODELS:
+    for slug, name, cost, notes, _ in TEXT_MODELS:
         print(f"  {C}{slug:<48}{R} {name:<22} {cost:<16}")
 
 
@@ -415,7 +421,7 @@ def pick_text_model(default_slug=None):
                 default_idx = i
                 break
     print(f"\n  {rainbow('text model')}")
-    for i, (slug, name, cost, _) in enumerate(TEXT_MODELS, 1):
+    for i, (slug, name, cost, _, _) in enumerate(TEXT_MODELS, 1):
         marker = f" {D}(default){R}" if i == default_idx else ""
         print(f"    {i}. {name:<24} {C}{slug:<50}{R} {cost}{marker}")
     print(f"    {len(TEXT_MODELS)+1}. custom\n")
