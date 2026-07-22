@@ -80,9 +80,9 @@ def resolve_default_model(mode="image"):
 
 def load_api_key():
     load_dotenv()
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if not key:
-        print(f"\n  {K}no API key found{R}")
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not key or "your-key" in key or len(key) < 20:
+        print(f"\n  {K}API key needed{R}")
         key = safe_input(f"  {C}enter your OpenRouter key{R} {D}(sk-or-v1-...){R} {D}›{R} ").strip()
         if not key:
             print(f"  {K}oops{R}  need an API key to continue")

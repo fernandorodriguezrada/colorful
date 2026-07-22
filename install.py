@@ -43,12 +43,14 @@ if not ENV_EXAMPLE.exists():
 if not ENV_FILE.exists():
     shutil.copy(str(ENV_EXAMPLE), str(ENV_FILE))
     print(f"  created {ENV_FILE}")
-key = os.environ.get("OPENROUTER_API_KEY")
-if not key:
+key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+if not key or "your-key" in key or len(key) < 20:
     for line in ENV_FILE.read_text().splitlines():
         if line.startswith("OPENROUTER_API_KEY=") and "sk-or-" in line:
-            key = line.split("=", 1)[1].strip()
-if not key or key.startswith("sk-or-v1-") is False:
+            candidate = line.split("=", 1)[1].strip()
+            if candidate and "your-key" not in candidate and len(candidate) >= 20:
+                key = candidate
+if not key or "your-key" in key or len(key) < 20:
     new_key = prompt("OpenRouter API key (sk-or-v1-...)", "")
     if new_key:
         lines = ENV_FILE.read_text().splitlines()
