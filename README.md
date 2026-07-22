@@ -7,7 +7,7 @@ a pastel-colored CLI for image generation & AI chat via OpenRouter, all in one f
 ## install
 
 ```bash
-git clone https://github.com/YOUR_USER/colorful.git
+git clone https://github.com/fernandorodriguezrada/colorful.git
 cd colorful
 python install.py
 ```
