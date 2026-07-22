@@ -165,11 +165,8 @@ def system_context():
     now = datetime.now()
     import platform
     return (
-        f"Today is {now.strftime('%A, %B %d, %Y')}. "
-        f"Current time is {now.strftime('%H:%M')} ({now.astimezone().tzinfo}). "
-        f"OS: {platform.system()} ({platform.release()}). "
-        f"Host: {platform.node()}. "
-        f"The user is running this from a terminal on their local machine."
+        f"{now.strftime('%b %d %H:%M')} {now.astimezone().tzinfo} "
+        f"{platform.system()} {platform.node()}"
     )
 
 def generate_text(messages, model, api_key):
@@ -226,8 +223,9 @@ def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
         print(f"\n  {rainbow('colorful')} {D}—{R} {C}{model_name}{R}  {D}(resumed){R}\n")
         for m in messages:
             if m["role"] == "user":
-                print(f"  {D}{USERNAME}{R} › {m['content']}")
+                print(f"  {C}{USERNAME}{R} > {m['content']}")
             elif m["role"] == "assistant":
+                print(f"  {P}{model_name}{R} > ", end="")
                 if _rich:
                     RichConsole().print(RichMD(m["content"]))
                 else:
@@ -237,15 +235,19 @@ def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
 
     if initial_prompt:
         messages.append({"role": "user", "content": initial_prompt})
-        print(f"  {D}{USERNAME}{R} › {initial_prompt}")
+        print(f"  {C}{USERNAME}{R} > {initial_prompt}")
         print(f"  {D}generating{R}... ", end="", flush=True)
         reply, usage = generate_text(messages, model, api_key)
         messages.append({"role": "assistant", "content": reply})
         token_info = ""
         if usage:
-            token_info = f"  {D}({usage.get('total_tokens','?')}t){R}"
+            pt = usage.get("prompt_tokens", "?")
+            ct = usage.get("completion_tokens", "?")
+            tt = usage.get("total_tokens", "?")
+            token_info = f"  {D}{tt}t  ↑{pt} ↓{ct}{R}"
         print(f"\r  {RAINBOW[3]}done{R}{token_info}")
         save_chat(messages, model)
+        print(f"  {P}{model_name}{R} > ", end="")
         if _rich:
             RichConsole().print(RichMD(reply))
         else:
@@ -253,7 +255,7 @@ def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
 
     while True:
         try:
-            prompt = input(f"{BAR}  {C}{USERNAME}{R} › ").strip()
+            prompt = input(f"{BAR}  {C}{USERNAME}{R} > ").strip()
             sys.stdout.write(BLOCK)
             sys.stdout.flush()
         except (EOFError, KeyboardInterrupt):
@@ -295,15 +297,34 @@ def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
                 print(f"  {C}{model_name}{R}")
             continue
 
+        if prompt == "/trim":
+            keep = 10
+            if len(messages) > keep + 1:
+                sys_msg = messages[0]
+                messages = [sys_msg] + messages[-keep:]
+                print(f"  {D}trimmed{R}  kept last {keep//2} exchanges  {D}({len(messages)} msgs){R}")
+            else:
+                print(f"  {D}only {len(messages)-1} messages{R}  nothing to trim")
+            continue
+
+        if prompt.startswith("/tokens"):
+            total = sum(len(m.get("content","")) for m in messages)
+            print(f"  {D}~{total//4} est. tokens{R}  {D}({len(messages)} msgs){R}")
+            continue
+
         messages.append({"role": "user", "content": prompt})
         print(f"  {D}generating{R}... ", end="", flush=True)
         reply, usage = generate_text(messages, model, api_key)
         messages.append({"role": "assistant", "content": reply})
         token_info = ""
         if usage:
-            token_info = f"  {D}({usage.get('total_tokens','?')}t){R}"
+            pt = usage.get("prompt_tokens", "?")
+            ct = usage.get("completion_tokens", "?")
+            tt = usage.get("total_tokens", "?")
+            token_info = f"  {D}{tt}t  ↑{pt} ↓{ct}{R}"
         print(f"\r  {RAINBOW[3]}done{R}{token_info}")
         save_chat(messages, model)
+        print(f"  {P}{model_name}{R} > ", end="")
         if _rich:
             RichConsole().print(RichMD(reply))
         else:
@@ -503,6 +524,8 @@ def print_help():
     {D}/load <n>{R}                          {D}resume a chat by number{R}
     {D}/new{R}                               {D}start fresh{R}
     {D}/model <slug>{R}                      {D}switch model mid-chat{R}
+    {D}/trim{R}                              {D}keep only last 5 exchanges{R}
+    {D}/tokens{R}                             {D}show estimated token count{R}
     {D}/exit{R}                              {D}leave the chat{R}
 
   {rainbow('other')}
