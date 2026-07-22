@@ -1,0 +1,610 @@
+#!/usr/bin/env python3
+import argparse
+import base64
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+try:
+    import requests
+except ImportError:
+    print("missing dependencies: run 'pip install requests Pillow python-dotenv'")
+    sys.exit(1)
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+try:
+    from rich.markdown import Markdown as RichMD
+    from rich.console import Console as RichConsole
+    _rich = True
+except ImportError:
+    _rich = False
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+MODELS = [
+    ("bytedance-seed/seedream-4.5",       "Seedream 4.5",      "$0.04/img",          "filters content"),
+    ("openai/gpt-image-1-mini",           "GPT Image 1 Mini",  "~$0.013/img",        "filters content"),
+    ("google/gemini-3.1-flash-lite-image","Nano Banana 2 Lite","~$0.001-0.034/img","filters content"),
+    ("black-forest-labs/flux.2-klein-4b", "FLUX.2 Klein 4B",  "~$0.014/img", "unrestricted*"),
+]
+# * flux.2-klein-4b requires ZDR off at https://openrouter.ai/settings/privacy
+
+TEXT_MODELS = [
+    ("google/gemma-4-26b-a4b-it:free",  "Gemma 4 26B",    "free",   ""),
+    ("google/gemma-4-31b-it:free",      "Gemma 4 31B",    "free",   ""),
+    ("deepseek/deepseek-v4-flash",      "DeepSeek V4 Flash","paid",""),
+]
+
+API_URL = "https://openrouter.ai/api/v1/images"
+CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+CHATS_DIR = Path.home() / ".local" / "share" / "colorful" / "chats"
+
+USERNAME = os.environ.get("USER") or os.environ.get("USERNAME") or "you"
+
+B = "\x1b[1m"
+I = "\x1b[3m"
+R = "\x1b[0m"
+D = "\x1b[38;2;97;114;133m"
+T = "\x1b[38;2;163;241;203m"
+C = "\x1b[38;2;177;211;254m"
+P = "\x1b[38;2;223;184;255m"
+K = "\x1b[38;2;255;183;211m"
+RAINBOW = ["\x1b[38;2;255;183;211m", "\x1b[38;2;223;184;255m", "\x1b[38;2;177;211;254m", "\x1b[38;2;163;241;203m", "\x1b[38;2;97;114;133m"]
+BAR = "\x1b[5 q"
+BLOCK = "\x1b[2 q"
+
+def rainbow(text):
+    out = ""
+    for i, ch in enumerate(text):
+        out += RAINBOW[i % len(RAINBOW)] + ch
+    return out + R
+
+def resolve_default_model(mode="image"):
+    load_dotenv()
+    if mode == "text":
+        return os.environ.get("COLORFUL_TEXT_MODEL") or TEXT_MODELS[0][0]
+    return os.environ.get("COLORFUL_MODEL") or MODELS[0][0]
+
+
+def load_api_key():
+    load_dotenv()
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        print("error: OPENROUTER_API_KEY not set (add to .env or export it)")
+        sys.exit(1)
+    return key
+
+
+def image_to_data_uri(path):
+    if Image is None:
+        print("error: Pillow not installed")
+        sys.exit(1)
+    img = Image.open(path)
+    buf = io.BytesIO()
+    fmt = img.format or "PNG"
+    img.save(buf, fmt)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    mime = f"image/{fmt.lower()}"
+    return f"data:{mime};base64,{b64}"
+
+
+def generate(image_uri, prompt, model, api_key):
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "input_references": [
+            {"type": "image_url", "image_url": {"url": image_uri}}
+        ],
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.post(API_URL, headers=headers, json=payload, timeout=120)
+    if resp.status_code != 200:
+        err = resp.json().get("error", {}).get("message", resp.text)
+        print(f"\r  {R}error{R}  {D}({resp.status_code}){R} {err}")
+        sys.exit(1)
+    data = resp.json()
+    b64 = data["data"][0]["b64_json"]
+    cost = data.get("usage", {}).get("cost")
+    if cost is None:
+        cost = "?"
+    return base64.b64decode(b64), cost
+
+
+def clear_line():
+    sys.stdout.write('\r' + ' ' * 80 + '\r')
+    sys.stdout.flush()
+
+def safe_input(prompt=""):
+    try:
+        result = input(f"{BAR}{prompt}")
+        sys.stdout.write(BLOCK)
+        sys.stdout.flush()
+        return result
+    except (EOFError, KeyboardInterrupt):
+        clear_line()
+        sys.exit(0)
+
+def system_context():
+    now = datetime.now()
+    import platform
+    return (
+        f"Today is {now.strftime('%A, %B %d, %Y')}. "
+        f"Current time is {now.strftime('%H:%M')} ({now.astimezone().tzinfo}). "
+        f"OS: {platform.system()} ({platform.release()}). "
+        f"Host: {platform.node()}. "
+        f"The user is running this from a terminal on their local machine."
+    )
+
+def generate_text(messages, model, api_key):
+    payload = {"model": model, "messages": messages}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.post(CHAT_URL, headers=headers, json=payload, timeout=120)
+    if resp.status_code != 200:
+        err = resp.json().get("error", {}).get("message", resp.text)
+        print(f"\r  {R}error{R}  {D}({resp.status_code}){R} {err}")
+        sys.exit(1)
+    data = resp.json()
+    reply = data["choices"][0]["message"]["content"]
+    usage = data.get("usage")
+    return reply, usage
+
+
+def save_chat(messages, model):
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = CHATS_DIR / f"{ts}.json"
+    path.write_text(json.dumps({"model": model, "messages": messages, "updated": ts}, indent=2))
+    return path
+
+def load_chat(path):
+    return json.loads(Path(path).read_text())
+
+def list_chats():
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(CHATS_DIR.glob("*.json"))
+    chats = []
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+            msgs = data.get("messages", [])
+            first = next((m["content"][:60] for m in msgs if m["role"] == "user"), "?")
+            ts = data.get("updated", f.stem)
+            chats.append((f, ts, first, data.get("model", "?")))
+        except Exception:
+            continue
+    return sorted(chats, key=lambda x: x[1], reverse=True)
+
+def chat_loop(model, api_key, initial_prompt=None, resume_path=None):
+    messages = [{"role": "system", "content": system_context()}]
+    model_name = next((n for s, n, *_ in TEXT_MODELS if s == model), model)
+
+    if resume_path:
+        data = load_chat(resume_path)
+        messages = data["messages"]
+        model = data.get("model", model)
+        model_name = next((n for s, n, *_ in TEXT_MODELS if s == model), model)
+        print(f"\n  {rainbow('colorful')} {D}—{R} {C}{model_name}{R}  {D}(resumed){R}\n")
+        for m in messages:
+            if m["role"] == "user":
+                print(f"  {D}{USERNAME}{R} › {m['content']}")
+            elif m["role"] == "assistant":
+                if _rich:
+                    RichConsole().print(RichMD(m["content"]))
+                else:
+                    print(m["content"])
+    else:
+        print(f"\n  {rainbow('colorful')} {D}—{R} {C}{model_name}{R}\n")
+
+    if initial_prompt:
+        messages.append({"role": "user", "content": initial_prompt})
+        print(f"  {D}{USERNAME}{R} › {initial_prompt}")
+        print(f"  {D}generating{R}... ", end="", flush=True)
+        reply, usage = generate_text(messages, model, api_key)
+        messages.append({"role": "assistant", "content": reply})
+        token_info = ""
+        if usage:
+            token_info = f"  {D}({usage.get('total_tokens','?')}t){R}"
+        print(f"\r  {RAINBOW[3]}done{R}{token_info}")
+        save_chat(messages, model)
+        if _rich:
+            RichConsole().print(RichMD(reply))
+        else:
+            print(reply)
+
+    while True:
+        try:
+            prompt = input(f"{BAR}  {C}{USERNAME}{R} › ").strip()
+            sys.stdout.write(BLOCK)
+            sys.stdout.flush()
+        except (EOFError, KeyboardInterrupt):
+            clear_line()
+            break
+
+        if not prompt or prompt in ("/exit", "/quit"):
+            break
+
+        if prompt == "/chats":
+            chats = list_chats()
+            if not chats:
+                print(f"  {D}no saved chats{R}")
+                continue
+            print(f"\n  {rainbow('chats')}")
+            for i, (path, ts, preview, m) in enumerate(chats[:10], 1):
+                print(f"    {i}. {D}{ts[:16]}{R}  {m:<20}  {preview}...")
+            print()
+            choice = input(f"{BAR}  {D}load{R} {D}#{R} {D}or enter to skip{R} {D}›{R} ").strip()
+            sys.stdout.write(BLOCK)
+            sys.stdout.flush()
+            if choice and choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(chats):
+                    return chat_loop(model, api_key, resume_path=str(chats[idx][0]))
+            continue
+
+        if prompt == "/new":
+            print(f"  {D}starting fresh chat{R}")
+            return chat_loop(model, api_key)
+
+        if prompt.startswith("/model"):
+            slug = prompt.split("/model", 1)[-1].strip()
+            if slug:
+                model = slug
+                model_name = next((n for s, n, *_ in TEXT_MODELS if s == model), model)
+                print(f"  {D}model → {C}{model_name}{R}")
+            else:
+                print(f"  {C}{model_name}{R}")
+            continue
+
+        messages.append({"role": "user", "content": prompt})
+        print(f"  {D}generating{R}... ", end="", flush=True)
+        reply, usage = generate_text(messages, model, api_key)
+        messages.append({"role": "assistant", "content": reply})
+        token_info = ""
+        if usage:
+            token_info = f"  {D}({usage.get('total_tokens','?')}t){R}"
+        print(f"\r  {RAINBOW[3]}done{R}{token_info}")
+        save_chat(messages, model)
+        if _rich:
+            RichConsole().print(RichMD(reply))
+        else:
+            print(reply)
+
+
+def display_image(img_bytes):
+    suffix = ".png"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(img_bytes)
+        tmp = f.name
+    try:
+        subprocess.run(
+            ["kitty", "+kitten", "icat", tmp],
+            check=True,
+        )
+    except FileNotFoundError:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = f"colorful-{ts}.png"
+        Path(out).write_bytes(img_bytes)
+        print(f"  saved to {out}")
+    except subprocess.CalledProcessError:
+        print("warning: failed to display in kitty")
+    finally:
+        os.unlink(tmp)
+
+
+def save_image(img_bytes, path):
+    Path(path).write_bytes(img_bytes)
+    print(f"saved to {path}")
+
+
+def set_env(key, value):
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        env_path.write_text(f"{key}={value}\n")
+        print(f"saved {key}={value}")
+        return
+    lines = env_path.read_text().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(lines) + "\n")
+    print(f"saved {key}={value}")
+
+
+def set_default_model(slug, mode="image"):
+    key = "COLORFUL_TEXT_MODEL" if mode == "text" else "COLORFUL_MODEL"
+    set_env(key, slug)
+    print(f"default {'text' if mode == 'text' else 'image'} model set to: {slug}")
+
+
+def resolve_output_dir():
+    return os.environ.get("COLORFUL_OUTPUT_DIR") or ""
+
+
+def list_models():
+    print(f"\n  {rainbow('image models')}")
+    print(f"  {D}{'slug':<48} {'name':<22} {'cost':<16}{R}")
+    print(f"  {D}{'─' * 86}{R}")
+    for slug, name, cost, _ in MODELS:
+        print(f"  {C}{slug:<48}{R} {name:<22} {cost:<16}")
+    print(f"\n  {rainbow('text models')}")
+    print(f"  {D}{'slug':<48} {'name':<22} {'cost':<16}{R}")
+    print(f"  {D}{'─' * 86}{R}")
+    for slug, name, cost, _ in TEXT_MODELS:
+        print(f"  {C}{slug:<48}{R} {name:<22} {cost:<16}")
+
+
+def list_text_models():
+    print(f"\n  {rainbow('text models')}")
+    print(f"  {D}{'slug':<48} {'name':<22} {'cost':<16}{R}")
+    print(f"  {D}{'─' * 88}{R}")
+    for slug, name, cost, notes in TEXT_MODELS:
+        print(f"  {C}{slug:<48}{R} {name:<22} {cost:<16}")
+
+
+def pick_text_model(default_slug=None):
+    default_idx = 1
+    if default_slug:
+        for i, (slug, *_) in enumerate(TEXT_MODELS, 1):
+            if slug == default_slug:
+                default_idx = i
+                break
+    print(f"\n  {rainbow('text model')}")
+    for i, (slug, name, cost, _) in enumerate(TEXT_MODELS, 1):
+        marker = f" {D}(default){R}" if i == default_idx else ""
+        print(f"    {i}. {name:<24} {C}{slug:<50}{R} {cost}{marker}")
+    print(f"    {len(TEXT_MODELS)+1}. custom\n")
+    while True:
+        try:
+            choice = safe_input(f"  choose [{default_idx}] › ").strip()
+            if not choice:
+                return TEXT_MODELS[default_idx - 1][0]
+            idx = int(choice) - 1
+            if 0 <= idx < len(TEXT_MODELS):
+                return TEXT_MODELS[idx][0]
+            if idx == len(TEXT_MODELS):
+                return safe_input("  custom slug › ").strip()
+            print(f"  enter 1-{len(TEXT_MODELS)+1}")
+        except (ValueError, EOFError):
+            print(f"  enter 1-{len(TEXT_MODELS)+1}")
+
+
+def pick_image_model(default_slug=None):
+    default_idx = 1
+    if default_slug:
+        for i, (slug, *_) in enumerate(MODELS, 1):
+            if slug == default_slug:
+                default_idx = i
+                break
+    print(f"\n  {rainbow('model')}")
+    for i, (slug, name, cost, _) in enumerate(MODELS, 1):
+        marker = f" {D}(default){R}" if i == default_idx else ""
+        print(f"    {i}. {name:<24} {C}{slug:<38}{R} {cost:<14}{marker}")
+    print(f"    {len(MODELS)+1}. custom\n")
+    while True:
+        try:
+            choice = safe_input(f"  choose [{default_idx}] › ").strip()
+            if not choice:
+                return MODELS[default_idx - 1][0]
+            idx = int(choice) - 1
+            if 0 <= idx < len(MODELS):
+                return MODELS[idx][0]
+            if idx == len(MODELS):
+                return safe_input("  custom slug › ").strip()
+            print(f"  enter 1-{len(MODELS)+1}")
+        except (ValueError, EOFError):
+            print(f"  enter 1-{len(MODELS)+1}")
+
+
+def interactive_mode(args_model=None):
+    print(f"\n  {rainbow('colorful')} {D}—{R} {I}OpenRouter{R}\n")
+    print(f"  {rainbow('pick a mode')}")
+    print(f"    {K}1{R}   {C}image{R}")
+    print(f"    {K}2{R}   {P}text{R}\n")
+    mode_choice = safe_input(f"  {D}mode{R} {K}[1]{R} {D}›{R} ").strip()
+    is_text = mode_choice == "2"
+
+    if is_text:
+        default = resolve_default_model("text")
+        model = args_model or default
+        if not args_model:
+            model = pick_text_model(default)
+        return "", "", model, "text"
+
+    print(f"\n  {rainbow('colorful')} {D}—{R} {I}image{R}\n")
+    img_path = safe_input(f"  {C}path{R} {D}›{R} ").strip()
+    if not img_path:
+        print(f"  {K}oops{R}  need an image path")
+        sys.exit(1)
+    if not os.path.exists(img_path):
+        print(f"  {K}oops{R}  {D}{img_path}{R} not found")
+        sys.exit(1)
+    prompt = safe_input(f"  {C}prompt{R} {D}›{R} ").strip()
+    if not prompt:
+        print(f"  {K}oops{R}  need a prompt")
+        sys.exit(1)
+    if args_model:
+        model = args_model
+    else:
+        model = pick_image_model(resolve_default_model("image"))
+    return img_path, prompt, model, "image"
+
+
+def print_help():
+    print(f"""
+  {rainbow('colorful')}  {D}—{R}  {I}image gen & chat  ·  OpenRouter{R}
+
+  {rainbow('text')}
+    {C}colorful -p "what is the meaning of life?"{R}
+    {D}colorful{R}                           {D}start interactive chat{R}
+    {D}colorful --chat-only{R}               {D}text mode (no image gen){R}
+
+  {rainbow('image')}
+    {C}colorful -i photo.jpg -p "make it a painting"{R}
+    {D}-i, --image <path>{R}                 {D}input image to edit{R}
+    {D}-p, --prompt <text>{R}                {D}describe the edit{R}
+    {D}-o, --output <file>{R}                {D}save result to path{R}
+    {D}--no-display{R}                       {D}skip preview, save only{R}
+
+  {rainbow('model')}
+    {D}-m, --model <slug>{R}                 {D}model to use (image or text){R}
+    {D}--list-models{R}                      {D}show all models (image + text){R}
+    {D}--list-text-models{R}                 {D}show text models only{R}
+    {D}--set-default-model <slug>{R}         {D}save image default{R}
+    {D}--set-default-text-model <slug>{R}    {D}save text default{R}
+    {D}--set-output-dir <path>{R}            {D}save output directory{R}
+
+  {rainbow('chat')}
+    {D}/chats{R}                             {D}list saved conversations{R}
+    {D}/load <n>{R}                          {D}resume a chat by number{R}
+    {D}/new{R}                               {D}start fresh{R}
+    {D}/model <slug>{R}                      {D}switch model mid-chat{R}
+    {D}/exit{R}                              {D}leave the chat{R}
+
+  {rainbow('other')}
+    {D}--diagnose{R}                         {D}debug chat persistence{R}
+    {D}-h{R}                                 {D}show this colorful help{R}""")
+
+
+def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--image", "-i")
+    parser.add_argument("--prompt", "-p")
+    parser.add_argument("--model", "-m", default=None)
+    parser.add_argument("--output", "-o")
+    parser.add_argument("--set-default-model")
+    parser.add_argument("--set-default-text-model")
+    parser.add_argument("--set-output-dir")
+    parser.add_argument("--list-models", action="store_true")
+    parser.add_argument("--list-text-models", action="store_true")
+    parser.add_argument("--no-display", action="store_true")
+    parser.add_argument("--diagnose", action="store_true")
+    parser.add_argument("--help", "-h", action="store_true")
+    args, _ = parser.parse_known_args()
+
+    if args.help:
+        print_help()
+        return
+
+    if args.set_default_model:
+        set_default_model(args.set_default_model)
+        return
+
+    if args.set_default_text_model:
+        set_default_model(args.set_default_text_model, mode="text")
+        return
+
+    if args.set_output_dir:
+        set_env("COLORFUL_OUTPUT_DIR", args.set_output_dir)
+        return
+
+    if args.list_models:
+        list_models()
+        return
+
+    if args.list_text_models:
+        list_text_models()
+        return
+
+    if args.diagnose:
+        print(f"\n  chats dir: {CHATS_DIR}")
+        print(f"  chats dir exists: {CHATS_DIR.exists()}")
+        files = sorted(CHATS_DIR.glob("*.json"))
+        print(f"  json files: {len(files)}")
+        for f in files:
+            try:
+                data = json.loads(f.read_text())
+                msgs = data.get("messages", [])
+                first = next((m["content"][:60] for m in msgs if m["role"] == "user"), "?")
+                print(f"    {f.name}  →  {first}")
+            except Exception as e:
+                print(f"    {f.name}  →  ERROR: {e}")
+        return
+
+    api_key = load_api_key()
+
+    if args.prompt and not args.image:
+        mode = "text"
+        prompt = args.prompt
+        model = args.model or resolve_default_model("text")
+        img_path = ""
+    elif args.image:
+        mode = "image"
+        img_path = args.image
+        if not os.path.exists(img_path):
+            print(f"  file not found: {img_path}")
+            sys.exit(1)
+        prompt = args.prompt
+        if not prompt:
+            print(f"\n  {rainbow('colorful')} {D}—{R} {I}image mode{R}\n")
+            prompt = safe_input(f"  {C}prompt{R} {D}›{R} ").strip()
+            if not prompt:
+                print("  no prompt provided")
+                sys.exit(1)
+        model = args.model or resolve_default_model("image")
+    else:
+        mode = "text"
+        img_path = ""
+        prompt = ""
+        model = args.model or resolve_default_model("text")
+
+    if mode == "text":
+        chat_loop(model, api_key, initial_prompt=prompt or None)
+        return
+
+    img_name = Path(img_path).name
+    model_name = next((n for s, n, *_ in MODELS if s == model), model)
+
+    print(f"\n  {D}{img_name}{R}")
+    print(f"  {C}{model_name}{R}")
+    print(f"  {I}{prompt}{R}")
+    print(f"  {D}generating{R}...", end="", flush=True)
+
+    image_uri = image_to_data_uri(img_path)
+    img_bytes, cost = generate(image_uri, prompt, model, api_key)
+
+    if args.output:
+        out_path = args.output
+    else:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = resolve_output_dir() or str(Path(img_path).parent)
+        out_path = str(Path(out_dir) / f"colorful-{ts}.png")
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_bytes(img_bytes)
+    cost_str = f"${cost:.4f}" if isinstance(cost, float) else str(cost)
+
+    print(f"\r  {RAINBOW[3]}done{R}  {D}{cost_str}{R}  → {out_path}")
+
+    if not args.no_display:
+        display_image(img_bytes)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print()
+        sys.exit(0)
