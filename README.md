@@ -1,5 +1,9 @@
 <img src="https://img.shields.io/badge/python-3.9%2B-177211254?style=flat" alt="python">
 
+<p align="center">
+  <img src="colorful.png" width="120" alt="colorful icon">
+</p>
+
 # colorful
 
 a pastel-colored CLI for image generation & AI chat via OpenRouter, all in one file.
