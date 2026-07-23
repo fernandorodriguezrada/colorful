@@ -11,6 +11,11 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    import readline
+except ImportError:
+    pass
+
+try:
     import requests
 except ImportError:
     print("missing dependencies: run 'pip install requests Pillow python-dotenv'")
